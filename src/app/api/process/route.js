@@ -3,16 +3,14 @@
 import { NextResponse } from 'next/server';
 import Anthropic from '@anthropic-ai/sdk';
 import { createWorker } from 'tesseract.js';
+import path from 'path';
 
-// Инициализируем клиент Anthropic (Claude)
 const anthropic = new Anthropic({
   apiKey: process.env.ANTHROPIC_API_KEY,
 });
 
-// Эта функция будет обрабатывать POST-запросы
 export async function POST(request) {
   try {
-    // 1. Получаем данные из запроса (это будет наше изображение)
     const formData = await request.formData();
     const file = formData.get('file');
 
@@ -20,13 +18,27 @@ export async function POST(request) {
       return NextResponse.json({ error: 'Файл не найден' }, { status: 400 });
     }
 
-    // Конвертируем файл в формат, понятный для OCR
     const bytes = await file.arrayBuffer();
     const buffer = Buffer.from(bytes);
 
-    // 2. Распознавание текста с изображения (OCR)
+    console.log('Начинаю инициализацию Tesseract worker...');
+    
+    // Указываем Tesseract пути к файлам внутри серверной функции Vercel
+    // Vercel размещает публичные файлы в корне
+    const workerPath = '/worker.min.js';
+    const corePath = '/tesseract-core.wasm';
+    
+    const worker = await createWorker('rus', 1, {
+        workerPath: workerPath,
+        corePath: corePath,
+        // Путь к языковым данным
+        tessdata: '/tessdata/',
+        // Эти параметры могут помочь ускорить работу на сервере
+        cacheMethod: 'none',
+        workerBlobURL: false,
+    });
+
     console.log('Начинаю распознавание текста...');
-    const worker = await createWorker('rus'); // Используем русский язык
     const { data: { text } } = await worker.recognize(buffer);
     await worker.terminate();
     console.log('Распознанный текст:', text);
@@ -35,7 +47,6 @@ export async function POST(request) {
         return NextResponse.json({ error: 'Не удалось распознать текст на изображении.' }, { status: 500 });
     }
 
-    // 3. Формируем запрос для Claude
     const prompt = `
       Проанализируй следующий текст с афиши мероприятия и извлеки из него информацию в формате JSON.
       
@@ -54,18 +65,15 @@ export async function POST(request) {
     `;
 
     console.log('Отправляю запрос в Claude...');
-    // 4. Отправляем запрос в Claude API
     const msg = await anthropic.messages.create({
-      model: "claude-3-haiku-20240307", // Используем быструю и недорогую модель
+      model: "claude-3-haiku-20240307",
       max_tokens: 1024,
       messages: [{ role: 'user', content: prompt }],
     });
 
-    // Извлекаем и парсим JSON из ответа
     const extractedJson = JSON.parse(msg.content[0].text);
     console.log('Получен ответ от Claude:', extractedJson);
     
-    // 5. Отправляем результат обратно на фронтенд
     return NextResponse.json(extractedJson);
 
   } catch (error) {
